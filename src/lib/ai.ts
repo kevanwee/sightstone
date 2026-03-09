@@ -1,7 +1,7 @@
-import Anthropic from "@anthropic-ai/sdk";
+import Groq from "groq-sdk";
 
-export const anthropic = new Anthropic({
-  apiKey: process.env.ANTHROPIC_API_KEY!,
+export const groq = new Groq({
+  apiKey: process.env.GROQ_API_KEY!,
 });
 
 export type ClauseExtractionResult = {
@@ -29,15 +29,18 @@ export async function extractClausesFromText(
   text: string,
   contractName: string
 ): Promise<ClauseExtractionResult> {
-  const message = await anthropic.messages.create({
-    model: "claude-3-5-haiku-20241022", // cheapest Claude model
+  const completion = await groq.chat.completions.create({
+    model: "llama-3.1-70b-versatile",
     max_tokens: 4096,
+    temperature: 0.1,
     messages: [
       {
+        role: "system",
+        content: "You are a legal expert specialising in contract analysis. Always respond with valid JSON only — no markdown, no code fences, no prose.",
+      },
+      {
         role: "user",
-        content: `You are a legal expert specialising in contract analysis. 
-
-Extract ALL distinct clauses from the following contract text. For each clause, identify:
+        content: `Extract ALL distinct clauses from the following contract text. For each clause, identify:
 1. The exact original text of the clause
 2. The clause type/category (e.g. "Limitation of Liability", "Indemnity", "Confidentiality", "Termination", "Governing Law", "Intellectual Property", "Payment Terms", "Force Majeure", "Warranty", "Dispute Resolution", etc.)
 3. The contractual effect - choose exactly ONE from: RIGHTS_GRANT, OBLIGATION, LIMITATION, EXCLUSION, INDEMNITY, REPRESENTATION, WARRANTY, TERMINATION, GOVERNANCE, DEFINITION, BOILERPLATE, OTHER
@@ -67,16 +70,15 @@ Respond ONLY with valid JSON in this exact format:
     ],
   });
 
-  const content = message.content[0];
-  if (content.type !== "text") throw new Error("Unexpected response type");
+  const responseText = completion.choices[0]?.message?.content ?? "";
 
   try {
-    // Extract JSON from response (handle markdown code blocks)
-    const jsonMatch = content.text.match(/\{[\s\S]*\}/);
+    // Extract JSON from response (handle any stray markdown)
+    const jsonMatch = responseText.match(/\{[\s\S]*\}/);
     if (!jsonMatch) throw new Error("No JSON found in response");
     return JSON.parse(jsonMatch[0]) as ClauseExtractionResult;
   } catch {
-    throw new Error(`Failed to parse AI response: ${content.text.substring(0, 200)}`);
+    throw new Error(`Failed to parse AI response: ${responseText.substring(0, 200)}`);
   }
 }
 
@@ -91,15 +93,18 @@ export async function compareClauses(
     .map((c, i) => `CONTRACT ${i + 1} (${c.contractName}):\n${c.text}`)
     .join("\n\n---\n\n");
 
-  const message = await anthropic.messages.create({
-    model: "claude-3-5-haiku-20241022",
+  const completion = await groq.chat.completions.create({
+    model: "llama-3.1-70b-versatile",
     max_tokens: 2048,
+    temperature: 0.2,
     messages: [
       {
+        role: "system",
+        content: "You are a legal expert specialising in contract harmonisation. Always respond with valid JSON only — no markdown, no code fences, no prose.",
+      },
+      {
         role: "user",
-        content: `You are a legal expert specialising in contract harmonisation.
-
-Compare the following "${clauseType}" clauses (contractual effect: ${contractualEffect}) from ${clauses.length} different contracts:
+        content: `Compare the following "${clauseType}" clauses (contractual effect: ${contractualEffect}) from ${clauses.length} different contracts:
 
 ${clauseList}
 
@@ -122,10 +127,9 @@ Respond ONLY with valid JSON:
     ],
   });
 
-  const content = message.content[0];
-  if (content.type !== "text") throw new Error("Unexpected response type");
+  const responseText = completion.choices[0]?.message?.content ?? "";
 
-  const jsonMatch = content.text.match(/\{[\s\S]*\}/);
+  const jsonMatch = responseText.match(/\{[\s\S]*\}/);
   if (!jsonMatch) throw new Error("No JSON found in response");
   return JSON.parse(jsonMatch[0]) as ComparisonResult;
 }
