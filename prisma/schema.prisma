@@ -1,0 +1,231 @@
+// Sightstone - Contract Playbook Harmonisation Platform
+// Database: PostgreSQL (Supabase free tier)
+// Auth: NextAuth v5 + Prisma Adapter
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── ORGANISATIONS ────────────────────────────────────────────────────────────
+
+model Organisation {
+  id          String   @id @default(cuid())
+  name        String
+  slug        String   @unique
+  logoUrl     String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  members   OrganisationMember[]
+  playbooks Playbook[]
+  invites   Invite[]
+}
+
+model OrganisationMember {
+  id             String       @id @default(cuid())
+  role           MemberRole   @default(MEMBER)
+  joinedAt       DateTime     @default(now())
+
+  userId         String
+  organisationId String
+
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organisation   Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, organisationId])
+}
+
+enum MemberRole {
+  OWNER
+  ADMIN
+  MEMBER
+  VIEWER
+}
+
+model Invite {
+  id             String       @id @default(cuid())
+  email          String
+  role           MemberRole   @default(MEMBER)
+  token          String       @unique @default(cuid())
+  accepted       Boolean      @default(false)
+  expiresAt      DateTime
+  createdAt      DateTime     @default(now())
+
+  organisationId String
+  organisation   Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+}
+
+// ─── USERS (NextAuth compatible) ──────────────────────────────────────────────
+
+model User {
+  id            String    @id @default(cuid())
+  name          String?
+  email         String    @unique
+  emailVerified DateTime?
+  image         String?
+  passwordHash  String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  accounts      Account[]
+  sessions      Session[]
+  memberships   OrganisationMember[]
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model VerificationToken {
+  identifier String
+  token      String
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+// ─── PLAYBOOKS ─────────────────────────────────────────────────────────────────
+
+model Playbook {
+  id             String         @id @default(cuid())
+  name           String
+  description    String?
+  status         PlaybookStatus @default(DRAFT)
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  organisationId String
+  createdById    String
+
+  organisation   Organisation   @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  contracts      Contract[]
+  clauseGroups   ClauseGroup[]
+}
+
+enum PlaybookStatus {
+  DRAFT
+  ANALYSING
+  REVIEW
+  HARMONISED
+}
+
+// ─── CONTRACTS ─────────────────────────────────────────────────────────────────
+
+model Contract {
+  id          String         @id @default(cuid())
+  name        String
+  fileUrl     String?        // Supabase Storage URL
+  fileType    String         // pdf | docx | txt
+  rawText     String?        @db.Text
+  status      ContractStatus @default(PENDING)
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  playbookId  String
+  playbook    Playbook       @relation(fields: [playbookId], references: [id], onDelete: Cascade)
+  clauses     Clause[]
+}
+
+enum ContractStatus {
+  PENDING
+  PROCESSING
+  PROCESSED
+  ERROR
+}
+
+// ─── CLAUSES ──────────────────────────────────────────────────────────────────
+
+model Clause {
+  id                String         @id @default(cuid())
+  originalText      String         @db.Text
+  clauseType        String         // e.g. "Limitation of Liability", "Indemnity"
+  contractualEffect ContractualEffect
+  riskLevel         RiskLevel      @default(MEDIUM)
+  position          Int            // order in original contract
+  createdAt         DateTime       @default(now())
+
+  contractId        String
+  contract          Contract       @relation(fields: [contractId], references: [id], onDelete: Cascade)
+
+  clauseGroupId     String?
+  clauseGroup       ClauseGroup?   @relation(fields: [clauseGroupId], references: [id])
+}
+
+enum ContractualEffect {
+  RIGHTS_GRANT
+  OBLIGATION
+  LIMITATION
+  EXCLUSION
+  INDEMNITY
+  REPRESENTATION
+  WARRANTY
+  TERMINATION
+  GOVERNANCE
+  DEFINITION
+  BOILERPLATE
+  OTHER
+}
+
+enum RiskLevel {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+// ─── CLAUSE GROUPS (harmonisation units) ──────────────────────────────────────
+
+model ClauseGroup {
+  id                    String              @id @default(cuid())
+  clauseType            String
+  contractualEffect     ContractualEffect
+  overlapSummary        String?             @db.Text  // AI summary of overlap
+  aiSuggestedWording    String?             @db.Text  // AI-normalised clause
+  chosenWording         String?             @db.Text  // User-selected wording
+  harmonisationStatus   HarmonisationStatus @default(PENDING)
+  preferredClauseId     String?             // points to chosen source Clause
+  createdAt             DateTime            @default(now())
+  updatedAt             DateTime            @updatedAt
+
+  playbookId            String
+  playbook              Playbook            @relation(fields: [playbookId], references: [id], onDelete: Cascade)
+  clauses               Clause[]
+}
+
+enum HarmonisationStatus {
+  PENDING
+  OVERLAP_IDENTIFIED
+  AWAITING_SELECTION
+  USER_SELECTED
+  AI_SUGGESTED
+  FINALISED
+}
