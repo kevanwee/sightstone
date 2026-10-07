@@ -23,6 +23,9 @@ export type ComparisonResult = {
   aiSuggestedWording: string;
 };
 
+// Groq retired llama-3.1-70b-versatile; GROQ_MODEL overrides the default without a code change
+const MODEL = process.env.GROQ_MODEL || "llama-3.3-70b-versatile";
+
 // ─── Extract Clauses from Contract Text ───────────────────────────────────────
 
 export async function extractClausesFromText(
@@ -30,7 +33,7 @@ export async function extractClausesFromText(
   contractName: string
 ): Promise<ClauseExtractionResult> {
   const completion = await groq.chat.completions.create({
-    model: "llama-3.1-70b-versatile",
+    model: MODEL,
     max_tokens: 4096,
     temperature: 0.1,
     messages: [
@@ -94,7 +97,7 @@ export async function compareClauses(
     .join("\n\n---\n\n");
 
   const completion = await groq.chat.completions.create({
-    model: "llama-3.1-70b-versatile",
+    model: MODEL,
     max_tokens: 2048,
     temperature: 0.2,
     messages: [
