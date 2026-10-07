@@ -1,6 +1,6 @@
 # Sightstone — Contract Playbook Harmonisation Platform
 
-> AI-powered platform for legal teams to harmonise contract playbooks across their organisation. Upload multiple contracts, extract and compare clauses by contractual effect, identify overlaps, and produce a single unified playbook — powered by Claude AI.
+> AI-powered platform for legal teams to harmonise contract playbooks across their organisation. Upload multiple contracts, extract and compare clauses by contractual effect, identify overlaps, and produce a single unified playbook — powered by Llama 3.3 70B on Groq.
 
 ---
 
@@ -50,11 +50,11 @@ Landing → Register / Login → Dashboard → New Playbook
 │  │  GET   /api/playbooks/[id]/export      ← download playbook       │   │
 │  │  GET   /api/organisation               ← org + members           │   │
 │  └──────────────────────────────────────────────────────────────────┘   │
-│           │ Prisma ORM       │ Anthropic SDK      │ File parsing         │
+│           │ Prisma ORM       │ Groq SDK           │ File parsing         │
 │  ┌────────▼──────┐  ┌────────▼────────┐  ┌───────▼──────────────┐      │
-│  │  PostgreSQL   │  │  Claude API     │  │  pdf-parse / mammoth  │      │
-│  │  (Supabase)   │  │  claude-3-5-    │  │   (text extraction)   │      │
-│  │  FREE tier    │  │  haiku model    │  │  Runs server-side     │      │
+│  │  PostgreSQL   │  │  Groq API       │  │  pdf-parse / mammoth  │      │
+│  │  (Supabase)   │  │  llama-3.3-70b  │  │   (text extraction)   │      │
+│  │  FREE tier    │  │  (free tier)    │  │  Runs server-side     │      │
 │  └───────────────┘  └─────────────────┘  └───────────────────────┘      │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
@@ -84,7 +84,7 @@ Organisation ──< OrganisationMember >── User
 
 ### Step 1 — Clause Extraction
 ```
-Contract raw text → Claude claude-3-5-haiku
+Contract raw text → Llama 3.3 70B (Groq)
 → Extract all clauses (clauseType, contractualEffect, riskLevel, position)
 → Clause records saved to DB
 ```
@@ -92,7 +92,7 @@ Contract raw text → Claude claude-3-5-haiku
 ### Step 2 — Clause Grouping & Comparison
 ```
 Clauses grouped by clauseType across contracts
-→ If 2+ clauses in group → Claude compares them:
+→ If 2+ clauses in group → the model compares them:
   • overlapSummary (what they have in common)
   • aiSuggestedWording (normalised balanced clause)
 → ClauseGroup saved with AI wording
@@ -114,12 +114,12 @@ User reviews ClauseGroup →
 | Service | Purpose | Free Tier |
 |---------|---------|-----------|
 | [Supabase](https://supabase.com) | PostgreSQL + storage | 500MB DB, 1GB storage |
-| [Anthropic Claude](https://console.anthropic.com) | AI analysis | Pay-per-use (~$0.01/contract) |
+| [Groq](https://console.groq.com) | AI analysis (Llama 3.3 70B) | Free tier with daily request limits |
 | [Vercel](https://vercel.com) | Hosting | Unlimited personal projects |
 | NextAuth v5 | Authentication | Open source |
 | Prisma | ORM | Open source |
 
-**Free AI alternative**: [Groq API](https://console.groq.com) — 14,400 req/day free with llama-3.1-70b. Update `src/lib/ai.ts` to use Groq SDK.
+Set `GROQ_MODEL` to use a different [Groq model](https://console.groq.com/docs/models).
 
 ---
 
@@ -127,13 +127,13 @@ User reviews ClauseGroup →
 
 ### 1. Install dependencies
 ```bash
-npm install
+npm install   # also generates the Prisma client (postinstall)
 ```
 
 ### 2. Configure environment
 ```bash
 cp .env.example .env.local
-# Fill in DATABASE_URL, AUTH_SECRET, ANTHROPIC_API_KEY
+# Fill in DATABASE_URL, AUTH_SECRET, GROQ_API_KEY and the three Supabase keys
 ```
 
 ### 3. Push database schema
@@ -156,10 +156,10 @@ Open [http://localhost:3000](http://localhost:3000)
 2. **Project Settings → Database → Connection String (URI)** → `DATABASE_URL`
 3. **Project Settings → API** → copy `NEXT_PUBLIC_SUPABASE_URL` and anon key
 
-## Getting Anthropic API Key
+## Getting a Groq API Key
 
-1. [console.anthropic.com](https://console.anthropic.com) → API Keys → Create Key
-2. Uses `claude-3-5-haiku-20241022` — ~$0.0008/1K tokens. 10-page contract < $0.01.
+1. [console.groq.com](https://console.groq.com) → API Keys → Create API Key → `GROQ_API_KEY`
+2. Uses `llama-3.3-70b-versatile` by default; set `GROQ_MODEL` to change it.
 
 ---
 
@@ -206,7 +206,7 @@ Set env vars in Vercel Dashboard → Project → Settings → Environment Variab
 | Authentication | NextAuth v5 (JWT + credentials) |
 | ORM | Prisma 6 |
 | Database | PostgreSQL via Supabase |
-| AI | Anthropic Claude (claude-3-5-haiku) |
+| AI | Llama 3.3 70B on Groq (groq-sdk) |
 | File Parsing | pdf-parse, mammoth |
 | File Upload | react-dropzone |
 | Deployment | Vercel |
