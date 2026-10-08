@@ -3,9 +3,22 @@ import { auth } from "@/auth";
 import { db } from "@/lib/db";
 import { z } from "zod";
 
-async function getOrgForUser(userId: string) {
+async function getOrgForUser(userId: string, write = false) {
   const membership = await db.organisationMember.findFirst({
-    where: { userId },
+    where: {
+      userId,
+      ...(write
+        ? {
+            role: {
+              in: ["OWNER", "ADMIN", "MEMBER"] as (
+                | "OWNER"
+                | "ADMIN"
+                | "MEMBER"
+              )[],
+            },
+          }
+        : {}),
+    },
     include: { organisation: true },
     orderBy: { joinedAt: "asc" },
   });
@@ -15,10 +28,15 @@ async function getOrgForUser(userId: string) {
 // ─── GET /api/playbooks ───────────────────────────────────────────────────────
 export async function GET() {
   const session = await auth();
-  if (!session?.user?.id) return NextResponse.json({ error: "Unauthorised" }, { status: 401 });
+  if (!session?.user?.id)
+    return NextResponse.json({ error: "Unauthorised" }, { status: 401 });
 
   const org = await getOrgForUser(session.user.id);
-  if (!org) return NextResponse.json({ error: "No organisation found" }, { status: 404 });
+  if (!org)
+    return NextResponse.json(
+      { error: "No organisation found" },
+      { status: 404 },
+    );
 
   const playbooks = await db.playbook.findMany({
     where: { organisationId: org.id },
@@ -39,10 +57,15 @@ const CreateSchema = z.object({
 
 export async function POST(req: NextRequest) {
   const session = await auth();
-  if (!session?.user?.id) return NextResponse.json({ error: "Unauthorised" }, { status: 401 });
+  if (!session?.user?.id)
+    return NextResponse.json({ error: "Unauthorised" }, { status: 401 });
 
-  const org = await getOrgForUser(session.user.id);
-  if (!org) return NextResponse.json({ error: "No organisation found" }, { status: 404 });
+  const org = await getOrgForUser(session.user.id, true);
+  if (!org)
+    return NextResponse.json(
+      { error: "No organisation found" },
+      { status: 404 },
+    );
 
   try {
     const body = await req.json();
@@ -63,6 +86,9 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ playbook }, { status: 201 });
   } catch (err) {
     console.error("[PLAYBOOKS POST]", err);
-    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
+    return NextResponse.json(
+      { error: "Internal server error" },
+      { status: 500 },
+    );
   }
 }

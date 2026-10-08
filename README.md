@@ -80,19 +80,68 @@ Organisation ──< OrganisationMember >── User
 
 ---
 
+## Reliability and operating limits
+
+Every playbook API and its server-rendered detail page checks organisation membership.
+OWNER, ADMIN and MEMBER can edit; VIEWER can read. Contract deletion also checks
+that the contract belongs to the addressed playbook. Analysis and edits coordinate
+through a database row lock and an optimistic timestamp lease.
+
+Analysis stays inside the HTTP request, with a 45-second model deadline and no
+background queue. It computes and validates replacement results before committing
+clauses, groups and status together in a transaction. Provider errors, malformed
+output and database errors preserve the previous saved decisions. After an
+interrupted request, the UI offers a retry once its 90-second lease expires; an
+older worker cannot overwrite a newer attempt. Existing stuck ANALYSING playbooks
+and PROCESSING contracts can use this recovery path without a schema migration.
+
+This bounded implementation accepts 2?5 readable contracts per analysis, each at
+most 15,000 extracted characters. Larger input is rejected explicitly, never
+silently truncated. Uploads accept PDF, DOCX and TXT, up to five files of 5 MB each;
+scanned documents require OCR before upload. Model responses must finish normally,
+match the expected schema and enums, and quote source text exactly. These checks
+do not prove extraction completeness or legal correctness: a human must compare
+results with the original documents. Model-generated wording is a draft.
+
+The upload route stores extracted text in PostgreSQL. It does not currently persist
+original files or invoke the optional Supabase storage helper. Contract text is sent
+to the configured Groq account only when analysis is requested. Configure deployment
+request limits for at least 60 seconds; shorter platform limits are recoverable via
+the lease, but may prevent longer analyses from completing. No paid queue or new
+service is required. Provider quotas can still cause an analysis to fail safely.
+
+## Validation
+
+```sh
+npm ci
+npm run lint
+npm run check-types
+npm test
+npm run build
+```
+
+Unit tests need no database or model credentials. PostgreSQL integration tests run
+in CI against a disposable database and mock the model boundary: they exercise
+cross-organisation access, viewer restrictions, wrong-playbook deletion, duplicate
+requests, stale workers, failure rollback, recovery and duplicate contract names.
+For a dedicated local test database named `sightstone_test`, apply `npx prisma db push`
+there and set `RUN_DATABASE_TESTS=1` before `npm test`. Never point those tests at an
+application database. Live Groq quality, quotas and deployed account setup are not
+certified by these offline checks.
+
 ## AI Pipeline
 
 ### Step 1 — Clause Extraction
 ```
 Contract raw text → Llama 3.3 70B (Groq)
 → Extract all clauses (clauseType, contractualEffect, riskLevel, position)
-→ Clause records saved to DB
+→ Source-backed clause data held until the complete analysis succeeds
 ```
 
 ### Step 2 — Clause Grouping & Comparison
 ```
-Clauses grouped by clauseType across contracts
-→ If 2+ clauses in group → the model compares them:
+Clauses grouped by clauseType AND contractualEffect across contracts
+→ If clauses from 2+ distinct contracts in group → the model compares them:
   • overlapSummary (what they have in common)
   • aiSuggestedWording (normalised balanced clause)
 → ClauseGroup saved with AI wording

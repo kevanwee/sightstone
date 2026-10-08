@@ -5,7 +5,7 @@
 
 export async function extractTextFromBuffer(
   buffer: Buffer,
-  fileType: string
+  fileType: string,
 ): Promise<string> {
   const type = fileType.toLowerCase();
 
@@ -15,7 +15,8 @@ export async function extractTextFromBuffer(
 
   if (
     type === "docx" ||
-    type === "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    type ===
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
   ) {
     return extractFromDocx(buffer);
   }
@@ -45,14 +46,13 @@ export function getFileTypeFromName(fileName: string): string {
   const map: Record<string, string> = {
     pdf: "pdf",
     docx: "docx",
-    doc: "docx",
     txt: "txt",
   };
   return map[ext] ?? ext;
 }
 
 export function isAcceptedFileType(fileType: string): boolean {
-  return ["pdf", "docx", "doc", "txt"].includes(
-    getFileTypeFromName(fileType.replace(".", ""))
+  return ["pdf", "docx", "txt"].includes(
+    getFileTypeFromName(fileType.replace(".", "")),
   );
 }
