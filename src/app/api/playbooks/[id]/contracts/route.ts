@@ -2,100 +2,149 @@ import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { db } from "@/lib/db";
 import { extractTextFromBuffer, getFileTypeFromName } from "@/lib/parser";
+import {
+  requirePlaybook,
+  playbookWhere,
+  withPlaybookWrite,
+  PlaybookError,
+  playbookErrorResponse,
+} from "@/lib/playbook-access";
 
-// ─── POST /api/playbooks/[id]/contracts  (upload one or more contracts) ───────
 export async function POST(
   req: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
+  { params }: { params: Promise<{ id: string }> },
 ) {
-  const { id: playbookId } = await params;
   const session = await auth();
-  if (!session?.user?.id) return NextResponse.json({ error: "Unauthorised" }, { status: 401 });
-
-  // Verify playbook belongs to user's org
-  const playbook = await db.playbook.findUnique({
-    where: { id: playbookId },
-    include: { organisation: { include: { members: { where: { userId: session.user.id } } } } },
-  });
-
-  if (!playbook) return NextResponse.json({ error: "Playbook not found" }, { status: 404 });
-  if (!playbook.organisation.members.length) {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  if (!session?.user?.id) {
+    return NextResponse.json({ error: "Unauthorised" }, { status: 401 });
   }
-
+  const userId = session.user.id;
   try {
+    const { id } = await params;
+    await requirePlaybook(id, userId, true);
     const formData = await req.formData();
-    const files = formData.getAll("files") as File[];
-
-    if (!files.length) {
-      return NextResponse.json({ error: "No files provided" }, { status: 400 });
+    const files = formData.getAll("files");
+    if (!files.length || files.length > 5) {
+      throw new PlaybookError(400, "Upload 1 to 5 files at a time.");
     }
-
-    const created = [];
-
+    const data: {
+      playbookId: string;
+      name: string;
+      fileType: string;
+      rawText: string;
+      status: "PROCESSED";
+    }[] = [];
     for (const file of files) {
-      const fileType = getFileTypeFromName(file.name);
-      const buffer = Buffer.from(await file.arrayBuffer());
-
-      // Extract raw text
-      let rawText = "";
-      try {
-        rawText = await extractTextFromBuffer(buffer, fileType);
-      } catch (parseErr) {
-        console.warn(`Failed to parse ${file.name}:`, parseErr);
-        rawText = "";
+      if (
+        !(file instanceof File) ||
+        !file.size ||
+        file.size > 5 * 1024 * 1024
+      ) {
+        throw new PlaybookError(
+          400,
+          "Each file must be non-empty and at most 5 MB.",
+        );
       }
-
-      const contract = await db.contract.create({
-        data: {
-          playbookId,
-          name: file.name.replace(/\.[^.]+$/, ""), // strip extension
+      const fileType = getFileTypeFromName(file.name);
+      if (!["pdf", "docx", "txt"].includes(fileType)) {
+        throw new PlaybookError(
+          400,
+          "Use PDF, DOCX or TXT files. Convert legacy DOC files first.",
+        );
+      }
+      let rawText: string;
+      try {
+        rawText = await extractTextFromBuffer(
+          Buffer.from(await file.arrayBuffer()),
           fileType,
-          rawText,
-          status: rawText ? "PROCESSED" : "ERROR",
-        },
+        );
+      } catch {
+        throw new PlaybookError(
+          400,
+          "A file could not be read. Try a text-based PDF, DOCX or TXT file.",
+        );
+      }
+      if (!rawText.trim()) {
+        throw new PlaybookError(
+          400,
+          "A file has no readable text. Scanned PDFs need OCR before upload.",
+        );
+      }
+      if (rawText.length > 500000) {
+        throw new PlaybookError(
+          400,
+          "A file contains too much text. Split it before uploading.",
+        );
+      }
+      data.push({
+        playbookId: id,
+        name: file.name.replace(/\.[^.]+$/, ""),
+        fileType,
+        rawText,
+        status: "PROCESSED" as const,
       });
-
-      created.push(contract);
     }
-
-    return NextResponse.json({ contracts: created }, { status: 201 });
-  } catch (err) {
-    console.error("[CONTRACTS POST]", err);
-    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
+    const contracts = await withPlaybookWrite(id, userId, async (tx) => {
+      const created = [];
+      for (const contract of data) {
+        created.push(await tx.contract.create({ data: contract }));
+      }
+      await tx.playbook.update({ where: { id }, data: { status: "DRAFT" } });
+      return created;
+    });
+    return NextResponse.json({ contracts }, { status: 201 });
+  } catch (error) {
+    return playbookErrorResponse(error);
   }
 }
 
-// ─── GET /api/playbooks/[id]/contracts ───────────────────────────────────────
 export async function GET(
   _req: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
+  { params }: { params: Promise<{ id: string }> },
 ) {
-  const { id: playbookId } = await params;
   const session = await auth();
-  if (!session?.user?.id) return NextResponse.json({ error: "Unauthorised" }, { status: 401 });
-
-  const contracts = await db.contract.findMany({
-    where: { playbookId },
-    include: { _count: { select: { clauses: true } } },
-    orderBy: { createdAt: "asc" },
-  });
-
-  return NextResponse.json({ contracts });
+  if (!session?.user?.id) {
+    return NextResponse.json({ error: "Unauthorised" }, { status: 401 });
+  }
+  try {
+    const { id } = await params;
+    await requirePlaybook(id, session.user.id);
+    const contracts = await db.contract.findMany({
+      where: { playbook: playbookWhere(id, session.user.id) },
+      include: { _count: { select: { clauses: true } } },
+      orderBy: { createdAt: "asc" },
+    });
+    return NextResponse.json({ contracts });
+  } catch (error) {
+    return playbookErrorResponse(error);
+  }
 }
 
-// ─── DELETE /api/playbooks/[id]/contracts?contractId=xxx ──────────────────────
 export async function DELETE(
   req: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
+  { params }: { params: Promise<{ id: string }> },
 ) {
-  await params;
   const session = await auth();
-  if (!session?.user?.id) return NextResponse.json({ error: "Unauthorised" }, { status: 401 });
-
-  const contractId = req.nextUrl.searchParams.get("contractId");
-  if (!contractId) return NextResponse.json({ error: "contractId required" }, { status: 400 });
-
-  await db.contract.delete({ where: { id: contractId } });
-  return NextResponse.json({ message: "Deleted" });
+  if (!session?.user?.id) {
+    return NextResponse.json({ error: "Unauthorised" }, { status: 401 });
+  }
+  try {
+    const { id } = await params;
+    const contractId = req.nextUrl.searchParams.get("contractId");
+    if (!contractId) {
+      throw new PlaybookError(400, "contractId required");
+    }
+    await withPlaybookWrite(id, session.user.id, async (tx) => {
+      const deleted = await tx.contract.deleteMany({
+        where: { id: contractId, playbookId: id },
+      });
+      if (!deleted.count) {
+        throw new PlaybookError(404, "Contract not found in this playbook");
+      }
+      await tx.playbook.update({ where: { id }, data: { status: "DRAFT" } });
+    });
+    return NextResponse.json({ message: "Deleted" });
+  } catch (error) {
+    return playbookErrorResponse(error);
+  }
 }

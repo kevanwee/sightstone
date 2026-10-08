@@ -1,3 +1,4 @@
+import { playbookWhere } from "@/lib/playbook-access";
 import { auth } from "@/auth";
 import { db } from "@/lib/db";
 import { redirect, notFound } from "next/navigation";
@@ -12,8 +13,8 @@ export default async function PlaybookPage({
   const session = await auth();
   if (!session?.user?.id) redirect("/login");
 
-  const playbook = await db.playbook.findUnique({
-    where: { id },
+  const playbook = await db.playbook.findFirst({
+    where: playbookWhere(id, session.user.id),
     include: {
       contracts: {
         include: { _count: { select: { clauses: true } } },
@@ -27,11 +28,25 @@ export default async function PlaybookPage({
         },
         orderBy: { clauseType: "asc" },
       },
-      organisation: { select: { id: true, name: true } },
+      organisation: {
+        select: {
+          id: true,
+          name: true,
+          members: {
+            where: { userId: session.user.id },
+            select: { role: true },
+          },
+        },
+      },
     },
   });
 
   if (!playbook) notFound();
 
-  return <PlaybookDetail playbook={playbook as never} />;
+  return (
+    <PlaybookDetail
+      playbook={playbook as never}
+      canWrite={playbook.organisation.members.some((m) => m.role !== "VIEWER")}
+    />
+  );
 }

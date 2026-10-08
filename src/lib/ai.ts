@@ -1,27 +1,22 @@
 import Groq from "groq-sdk";
 
-export const groq = new Groq({
-  apiKey: process.env.GROQ_API_KEY!,
-});
+import {
+  parseExtraction,
+  parseComparison,
+  validateContractText,
+} from "@/lib/analysis-validation";
+import type {
+  ClauseExtractionResult,
+  ComparisonResult,
+} from "@/lib/analysis-validation";
 
-export type ClauseExtractionResult = {
-  clauses: {
-    originalText: string;
-    clauseType: string;
-    contractualEffect: string;
-    riskLevel: string;
-    position: number;
-  }[];
-};
-
-export type ComparisonResult = {
-  clauseType: string;
-  contractualEffect: string;
-  overlapSummary: string;
-  similarities: string[];
-  differences: string[];
-  aiSuggestedWording: string;
-};
+function client() {
+  return new Groq({
+    apiKey: process.env.GROQ_API_KEY,
+    timeout: 45000,
+    maxRetries: 0,
+  });
+}
 
 // Groq retired llama-3.1-70b-versatile; GROQ_MODEL overrides the default without a code change
 const MODEL = process.env.GROQ_MODEL || "llama-3.3-70b-versatile";
@@ -30,20 +25,25 @@ const MODEL = process.env.GROQ_MODEL || "llama-3.3-70b-versatile";
 
 export async function extractClausesFromText(
   text: string,
-  contractName: string
+  contractName: string,
+  signal?: AbortSignal,
 ): Promise<ClauseExtractionResult> {
-  const completion = await groq.chat.completions.create({
-    model: MODEL,
-    max_tokens: 4096,
-    temperature: 0.1,
-    messages: [
-      {
-        role: "system",
-        content: "You are a legal expert specialising in contract analysis. Always respond with valid JSON only — no markdown, no code fences, no prose.",
-      },
-      {
-        role: "user",
-        content: `Extract ALL distinct clauses from the following contract text. For each clause, identify:
+  validateContractText(text);
+  const completion = await client().chat.completions.create(
+    {
+      model: MODEL,
+      max_tokens: 4096,
+      response_format: { type: "json_object" },
+      temperature: 0.1,
+      messages: [
+        {
+          role: "system",
+          content:
+            "You are a legal expert specialising in contract analysis. Always respond with valid JSON only — no markdown, no code fences, no prose.",
+        },
+        {
+          role: "user",
+          content: `Extract ALL distinct clauses from the following contract text. For each clause, identify:
 1. The exact original text of the clause
 2. The clause type/category (e.g. "Limitation of Liability", "Indemnity", "Confidentiality", "Termination", "Governing Law", "Intellectual Property", "Payment Terms", "Force Majeure", "Warranty", "Dispute Resolution", etc.)
 3. The contractual effect - choose exactly ONE from: RIGHTS_GRANT, OBLIGATION, LIMITATION, EXCLUSION, INDEMNITY, REPRESENTATION, WARRANTY, TERMINATION, GOVERNANCE, DEFINITION, BOILERPLATE, OTHER
@@ -54,7 +54,7 @@ Contract: "${contractName}"
 
 Contract Text:
 ---
-${text.substring(0, 15000)}
+${text}
 ---
 
 Respond ONLY with valid JSON in this exact format:
@@ -69,20 +69,18 @@ Respond ONLY with valid JSON in this exact format:
     }
   ]
 }`,
-      },
-    ],
-  });
+        },
+      ],
+    },
+    { signal },
+  );
 
+  if (completion.choices[0]?.finish_reason !== "stop") {
+    throw new Error("Incomplete model response");
+  }
   const responseText = completion.choices[0]?.message?.content ?? "";
 
-  try {
-    // Extract JSON from response (handle any stray markdown)
-    const jsonMatch = responseText.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) throw new Error("No JSON found in response");
-    return JSON.parse(jsonMatch[0]) as ClauseExtractionResult;
-  } catch {
-    throw new Error(`Failed to parse AI response: ${responseText.substring(0, 200)}`);
-  }
+  return parseExtraction(responseText, text);
 }
 
 // ─── Compare Clauses of Same Type Across Contracts ────────────────────────────
@@ -90,24 +88,28 @@ Respond ONLY with valid JSON in this exact format:
 export async function compareClauses(
   clauseType: string,
   contractualEffect: string,
-  clauses: { contractName: string; text: string }[]
+  clauses: { contractName: string; text: string }[],
+  signal?: AbortSignal,
 ): Promise<ComparisonResult> {
   const clauseList = clauses
     .map((c, i) => `CONTRACT ${i + 1} (${c.contractName}):\n${c.text}`)
     .join("\n\n---\n\n");
 
-  const completion = await groq.chat.completions.create({
-    model: MODEL,
-    max_tokens: 2048,
-    temperature: 0.2,
-    messages: [
-      {
-        role: "system",
-        content: "You are a legal expert specialising in contract harmonisation. Always respond with valid JSON only — no markdown, no code fences, no prose.",
-      },
-      {
-        role: "user",
-        content: `Compare the following "${clauseType}" clauses (contractual effect: ${contractualEffect}) from ${clauses.length} different contracts:
+  const completion = await client().chat.completions.create(
+    {
+      model: MODEL,
+      max_tokens: 2048,
+      response_format: { type: "json_object" },
+      temperature: 0.2,
+      messages: [
+        {
+          role: "system",
+          content:
+            "You are a legal expert specialising in contract harmonisation. Always respond with valid JSON only — no markdown, no code fences, no prose.",
+        },
+        {
+          role: "user",
+          content: `Compare the following "${clauseType}" clauses (contractual effect: ${contractualEffect}) from ${clauses.length} different contracts:
 
 ${clauseList}
 
@@ -126,13 +128,16 @@ Respond ONLY with valid JSON:
   "differences": ["Difference 1", "Difference 2"],
   "aiSuggestedWording": "Full normalised clause text..."
 }`,
-      },
-    ],
-  });
+        },
+      ],
+    },
+    { signal },
+  );
 
+  if (completion.choices[0]?.finish_reason !== "stop") {
+    throw new Error("Incomplete model response");
+  }
   const responseText = completion.choices[0]?.message?.content ?? "";
 
-  const jsonMatch = responseText.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) throw new Error("No JSON found in response");
-  return JSON.parse(jsonMatch[0]) as ComparisonResult;
+  return parseComparison(responseText, clauseType, contractualEffect);
 }
